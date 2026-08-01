@@ -1,0 +1,22 @@
+[
+  {
+    "_id": 9001,
+    "threadid": 41,
+    "type": "inbox",
+    "read": true,
+    "number": "+1-555-0100",
+    "sender": "Synthetic Contact A",
+    "received": "2026-07-30 10:05:00",
+    "body": "SYNTHETIC TEST MESSAGE ONE - not real content"
+  },
+  {
+    "_id": 9002,
+    "threadid": 41,
+    "type": "sent",
+    "read": true,
+    "number": "+1-555-0100",
+    "sender": null,
+    "received": "2026-07-30 10:06:30",
+    "body": "SYNTHETIC TEST MESSAGE TWO"
+  }
+]

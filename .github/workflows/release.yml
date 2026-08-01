@@ -1,0 +1,141 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to build a release from
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Re-verify before releasing
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: actions/setup-python@v7.0.0
+        with:
+          python-version: "3.13"
+
+      # A tag must never be released on the strength of an older green run:
+      # the full suite runs again against the exact tagged tree.
+      - name: Install and test
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+          ruff format --check .
+          ruff check .
+          mypy
+          pytest -q
+
+  release:
+    name: Build and publish the release
+    needs: verify
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: actions/setup-python@v7.0.0
+        with:
+          python-version: "3.13"
+
+      - name: Confirm the tag matches the package version
+        run: |
+          set -euo pipefail
+          tag="${{ inputs.tag || github.ref_name }}"
+          version=$(python -c "import tomllib,pathlib; print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])")
+          if [ "${tag}" != "v${version}" ]; then
+            echo "::error::tag ${tag} does not match pyproject version ${version}"
+            exit 1
+          fi
+          echo "version=${version}" >> "$GITHUB_ENV"
+
+      - name: Build distributions
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build
+
+      - name: Assemble the release archive
+        run: |
+          set -euo pipefail
+          staging="android-timeline-termux-${version}"
+          mkdir -p "release/${staging}"
+          cp -r scripts termux-boot schemas "release/${staging}/"
+          cp config.example.toml README.md LICENSE SECURITY.md "release/${staging}/"
+          tar -czf "release/${staging}.tar.gz" -C release "${staging}"
+          cp dist/* release/
+          rm -rf "release/${staging}"
+
+          cd release
+          sha256sum ./* > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Generate build provenance attestations
+        uses: actions/attest-build-provenance@v4.1.1
+        with:
+          subject-path: "release/*.tar.gz,release/*.whl,release/*.dist"
+
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          notes=$(cat <<'NOTES'
+          ## Android Timeline collector for Termux
+
+          Experimental. Not yet verified on a physical Android device --
+          see the `Real Android device acceptance testing` issue and
+          `docs/testing-limitations.md` for exactly what CI does and does
+          not prove.
+
+          ### Contents
+
+          | Artifact | Purpose |
+          | --- | --- |
+          | `*.whl`, `*.tar.gz` (sdist) | the Python package |
+          | `android-timeline-termux-*.tar.gz` | installation scripts, Termux:Boot launcher, protocol schemas and the example config |
+          | `SHA256SUMS` | checksums for every artifact |
+
+          ### Install on Termux
+
+          ```bash
+          pkg install python git
+          git clone https://github.com/resace3/android-timeline-termux
+          cd android-timeline-termux
+          ./scripts/install-termux.sh
+          ```
+
+          ### Protocol
+
+          This release speaks `protocol_version` 1. The matching server is
+          [`android-timeline-home-assistant`](https://github.com/resace3/android-timeline-home-assistant).
+          NOTES
+          )
+          gh release create "${TAG}" release/* \
+            --title "${TAG}" \
+            --notes "${notes}" \
+            --verify-tag
+
+      # Publishing to PyPI is deliberately NOT configured. The package name
+      # would occupy a global namespace for software that has never run on a
+      # physical phone, and installation via git clone is what the Termux
+      # documentation already describes.

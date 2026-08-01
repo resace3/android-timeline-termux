@@ -1,0 +1,286 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONHASHSEED: "0"
+
+jobs:
+  lint:
+    name: Format, lint and type check
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v7.0.0
+        with:
+          python-version: "3.13"
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Ruff format check
+        run: ruff format --check --diff .
+
+      - name: Ruff lint
+        run: ruff check --output-format=github .
+
+      - name: Mypy
+        run: mypy
+
+  test:
+    name: Tests (python ${{ matrix.python-version }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v7.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Unit tests
+        run: pytest tests/unit -v --cov=android_timeline --cov-report=term-missing
+
+      - name: Integration tests (synthetic local HTTP server)
+        run: pytest tests/integration -v
+
+      - name: Contract tests (JSON Schema and protocol checksums)
+        run: pytest tests/contract -v
+
+      - name: Full suite with coverage
+        run: |
+          pytest --cov=android_timeline --cov-report=xml --cov-report=term
+
+      - name: Upload coverage
+        if: matrix.python-version == '3.13'
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: coverage-${{ matrix.python-version }}
+          path: coverage.xml
+          retention-days: 7
+
+  runtime-dependencies:
+    name: Runtime must stay dependency-free
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v7.0.0
+        with:
+          python-version: "3.13"
+
+      # Termux users must never need a compiler. Installing without the
+      # dev extra and importing every module proves the runtime is stdlib
+      # only -- if a dependency creeps in, this job fails.
+      - name: Install without extras
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install .
+
+      - name: Assert no third-party runtime dependencies
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import importlib.metadata as md
+          import sys
+
+          required = md.requires("android-timeline-termux") or []
+          runtime = [r for r in required if "extra ==" not in r]
+          if runtime:
+              print("::error::unexpected runtime dependencies: " + ", ".join(runtime))
+              sys.exit(1)
+          print("runtime dependency set is empty")
+          PY
+
+      - name: Import every module
+        run: |
+          python - <<'PY'
+          import importlib
+          import pkgutil
+
+          import android_timeline
+
+          for module in pkgutil.walk_packages(
+              android_timeline.__path__, "android_timeline."
+          ):
+              importlib.import_module(module.name)
+              print("imported", module.name)
+          PY
+
+  package:
+    name: Build and install smoke test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v7.0.0
+        with:
+          python-version: "3.13"
+
+      - name: Build sdist and wheel
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build
+
+      - name: Install the built wheel into a clean venv
+        run: |
+          python -m venv /tmp/smoke
+          /tmp/smoke/bin/pip install --upgrade pip
+          /tmp/smoke/bin/pip install dist/*.whl
+
+      - name: CLI smoke test
+        run: |
+          set -euo pipefail
+          export ANDROID_TIMELINE_HOME=/tmp/atl-data
+          export ANDROID_TIMELINE_TOKEN=synthetic-ci-token
+          export ANDROID_TIMELINE_SALT=synthetic-ci-salt
+          export ANDROID_TIMELINE_TERMUX_MOCK_DIR="${GITHUB_WORKSPACE}/tests/fixtures/termux"
+          CONFIG=/tmp/atl-config.toml
+
+          /tmp/smoke/bin/android-timeline --version
+          /tmp/smoke/bin/android-timeline --config "$CONFIG" init
+          sed -i 's|^base_url = .*|base_url = "https://timeline.example.invalid:8099"|' "$CONFIG"
+          sed -i 's|^device_id = .*|device_id = "device-ci-001"|' "$CONFIG"
+
+          /tmp/smoke/bin/android-timeline --config "$CONFIG" --json collect-once --heartbeat
+          /tmp/smoke/bin/android-timeline --config "$CONFIG" --json status
+          /tmp/smoke/bin/android-timeline --config "$CONFIG" --json doctor || true
+
+          test -f /tmp/atl-data/outbox.sqlite3
+          echo 'SQLite outbox created'
+
+      - name: Verify the example config has not drifted
+        run: |
+          set -euo pipefail
+          python -m pip install -e .
+          python -m android_timeline.cli init --print-example > /tmp/example.toml
+          diff -u config.example.toml /tmp/example.toml
+
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: dist
+          path: dist/
+          retention-days: 7
+
+  shell:
+    name: Shell script analysis
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      # shellcheck ships on the GitHub runner image, so no third-party
+      # action is needed here.
+      - name: ShellCheck
+        run: |
+          set -euo pipefail
+          shellcheck --version
+          # The Termux shebang path is not resolvable on Linux, so the
+          # dialect is specified explicitly.
+          shellcheck --shell=bash --severity=style scripts/*.sh
+          shellcheck --shell=sh --severity=style termux-boot/start-android-timeline
+
+      - name: Scripts must not be checked in without the executable bit
+        run: |
+          set -euo pipefail
+          missing=0
+          for f in scripts/*.sh termux-boot/start-android-timeline; do
+            if [ ! -x "$f" ]; then
+              echo "::error file=$f::missing executable bit (git update-index --chmod=+x $f)"
+              missing=1
+            fi
+          done
+          exit "$missing"
+
+  no-secrets:
+    name: No secrets or personal data
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Scan the tree for credential-shaped strings
+        run: |
+          set -euo pipefail
+          # Deliberately narrow patterns: real tokens, not the word "token".
+          patterns=(
+            'gh[pousr]_[A-Za-z0-9]{36,}'
+            'eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.'
+            '-----BEGIN [A-Z ]*PRIVATE KEY-----'
+            '\.ui\.nabu\.casa'
+            'homeassistant\.local'
+            'AKIA[0-9A-Z]{16}'
+          )
+          failed=0
+          for pattern in "${patterns[@]}"; do
+            # -e is required: some patterns begin with '-'.
+            if grep -rInE --exclude-dir=.git --exclude-dir=.github -e "${pattern}" .; then
+              echo "::error::found a credential-shaped string matching /${pattern}/"
+              failed=1
+            fi
+          done
+          exit "$failed"
+
+      - name: Only reserved example identifiers appear in fixtures
+        run: |
+          set -euo pipefail
+          # RFC 2606 / RFC 5737 reserved ranges and the 555-01xx fictional
+          # phone block are the only identifiers allowed in test data.
+          if grep -rInP '\+1-(?!555-01)[0-9]' tests/ 2>/dev/null; then
+            echo '::error::a non-fictional phone number appears in tests/'
+            exit 1
+          fi
+          grep -rIn 'device-test-001' tests/ >/dev/null
+          echo 'fixtures use reserved example identifiers only'
+
+  ci-required:
+    name: CI required checks
+    runs-on: ubuntu-24.04
+    needs: [lint, test, runtime-dependencies, package, shell, no-secrets]
+    if: always()
+    steps:
+      - name: Fail if any required job failed
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          set -euo pipefail
+          echo "job results: ${RESULTS}"
+          for result in ${RESULTS}; do
+            if [ "${result}" != "success" ]; then
+              echo "::error::a required CI job reported '${result}'"
+              exit 1
+            fi
+          done
+          echo 'all required CI jobs succeeded'

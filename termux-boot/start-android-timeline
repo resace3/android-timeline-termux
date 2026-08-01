@@ -1,0 +1,25 @@
+#!/data/data/com.termux/files/usr/bin/sh
+#
+# Termux:Boot launcher.
+#
+# Termux:Boot runs every executable in ~/.termux/boot after the device
+# finishes booting. Keep this thin: anything slow here delays boot, and
+# anything that fails here fails silently with no console attached.
+set -eu
+
+DATA_DIR="${HOME}/.local/share/android-timeline"
+LOG_FILE="${DATA_DIR}/boot.log"
+
+mkdir -p "$DATA_DIR"
+
+{
+    echo "--- boot $(date -u +%Y-%m-%dT%H:%M:%SZ) ---"
+} >> "$LOG_FILE" 2>&1
+
+# Hold a wake lock so Android does not suspend the collector immediately.
+if command -v termux-wake-lock >/dev/null 2>&1; then
+    termux-wake-lock >> "$LOG_FILE" 2>&1 || true
+fi
+
+exec "${HOME}/.local/share/android-timeline/venv/bin/android-timeline" \
+    --verbose run >> "$LOG_FILE" 2>&1

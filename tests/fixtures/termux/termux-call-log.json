@@ -1,0 +1,23 @@
+[
+  {
+    "name": "Synthetic Contact A",
+    "phone_number": "+1-555-0100",
+    "type": "INCOMING",
+    "date": "2026-07-30 09:15:00",
+    "duration": 214
+  },
+  {
+    "name": "Synthetic Contact B",
+    "phone_number": "+1-555-0101",
+    "type": "OUTGOING",
+    "date": "2026-07-30 14:02:11",
+    "duration": 63
+  },
+  {
+    "name": null,
+    "phone_number": "+1-555-0102",
+    "type": "MISSED",
+    "date": "2026-07-30 18:44:05",
+    "duration": 0
+  }
+]

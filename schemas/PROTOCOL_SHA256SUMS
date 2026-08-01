@@ -1,0 +1,12 @@
+# Protocol schema checksums (protocol_version 1).
+#
+# android-timeline-home-assistant is the source of truth for these files;
+# this repository vendors a byte-identical copy. The cross-repository E2E
+# workflow compares the two directly, and tests/contract/test_schemas.py
+# verifies this checksum list on every push so an accidental local edit is
+# caught before it can drift.
+#
+# Regenerate with:  sha256sum schemas/*.schema.json
+de9847ffba347daf7e45a381674f2e02f76cbdaf95236b34fece016e4ecded24  acknowledgement.schema.json
+edb8bb50c953d6fcb92af7a2ad4ed6a87c8474449b2ff19887a8dbe3a7f049d9  batch.schema.json
+2afad9eb464f6d1399643b2f90da0abd8f429122d37ea24c06dcd10e06457b4b  event.schema.json

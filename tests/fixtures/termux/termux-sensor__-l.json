@@ -1,0 +1,8 @@
+{
+  "sensors": [
+    "Synthetic Accelerometer",
+    "Synthetic Gyroscope",
+    "Synthetic Light Sensor",
+    "Synthetic Vendor Widget"
+  ]
+}

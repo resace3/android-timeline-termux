@@ -80,8 +80,8 @@ This is the part most likely to be misread, so it is stated plainly.
 | Layer | Environment | Status | What it proves |
 | --- | --- | --- | --- |
 | 1 | Ubuntu, Python 3.11-3.13 | **Required, passing** | Event model, SQLite outbox, deduplication, batching, retry and backoff, config validation, redaction, schema conformance, CLI, and a full upload round trip against a real local HTTP server. |
-| 2 | Official `termux/termux-docker` | **Informational, non-blocking** | The genuine Termux filesystem layout, `PREFIX`/`HOME`, the unprivileged uid 1000, and that our installer accepts real Termux while refusing an ordinary Linux image. Package installation usually fails on GitHub runners -- see below. |
-| 3 | Android emulator (API 34, x86_64) | **Non-blocking** | Boot, pushing the payload to a real Android filesystem, the outbox schema under the device's own SQLite, and an authenticated batch upload over the emulator host bridge. |
+| 2 | Official `termux/termux-docker` | **Informational, non-blocking** | The genuine Termux filesystem layout, `PREFIX`/`HOME`, the unprivileged uid 1000, that our installer accepts real Termux while refusing an ordinary Linux image, and -- when upstream mirrors are reachable -- installing Python and running the collector inside real Termux. |
+| 3 | Android emulator (API 34, x86_64) | **Non-blocking** | Boot, pushing the payload to a real Android filesystem, the outbox schema under the device's own SQLite, an authenticated batch upload over the emulator host bridge, idempotent replay, and rejection of an invalid token. |
 | 4 | Physical Android device | **NOT DONE** | Nothing. No physical device has ever run this. |
 
 ### Layer 2 in detail
@@ -92,12 +92,15 @@ realities are handled honestly rather than worked around:
 - GitHub Actions replaces a job container's entrypoint with `tail -f
   /dev/null`, bypassing `termux-docker`'s `/entrypoint.sh`. The workflow
   therefore drives `docker run` directly.
-- `pkg install` inside the image typically fails on GitHub runners with
-  *"None of the mirrors are accessible"*, a container DNS problem that
+- `pkg install` inside the image has historically failed on GitHub runners
+  with *"None of the mirrors are accessible"*, a container DNS problem that
   upstream closed as wontfix
   ([termux/termux-docker#51](https://github.com/termux/termux-docker/issues/51)).
-  The workflow attempts it, records the exact failure in the job summary,
-  and continues with the checks that do not need the network.
+  It currently **succeeds** here -- Python 3.14 installs and the collector
+  runs inside real Termux -- but that depends on upstream mirror
+  availability this project does not control, which is why the job stays
+  non-blocking and records the exact failure in the job summary when it does
+  fail.
 
 **A Linux container running the Termux rootfs is not Android.** There is no
 Android framework, no Termux:API, no Binder, no battery and no sensors in
