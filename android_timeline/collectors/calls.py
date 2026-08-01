@@ -83,7 +83,7 @@ def _direction(value: str) -> str:
 
 def _as_int(value: Any) -> int | None:
     try:
-        return int(value)  # type: ignore[arg-type]
+        return int(value)
     except (TypeError, ValueError):
         return None
 

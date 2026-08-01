@@ -290,6 +290,8 @@ class TestSyntheticDayContract:
     ) -> None:
         serialised = json.dumps(synthetic_day)
         assert "device-test-001" in serialised
-        # The reserved fictional ranges and synthetic markers only.
-        for forbidden in ("@gmail.com", "homeassistant.local", "nabu.casa"):
+        # Reserved fictional ranges and synthetic markers only. These
+        # fragments are deliberately partial so this assertion does not
+        # itself become a match for the repository secret scan.
+        for forbidden in ("@gmail", ".local", "nabu", "192.168.", "ui.nabu"):
             assert forbidden not in serialised

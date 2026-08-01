@@ -245,7 +245,8 @@ jobs:
           )
           failed=0
           for pattern in "${patterns[@]}"; do
-            if grep -rInE --exclude-dir=.git --exclude-dir=.github "${pattern}" .; then
+            # -e is required: some patterns begin with '-'.
+            if grep -rInE --exclude-dir=.git --exclude-dir=.github -e "${pattern}" .; then
               echo "::error::found a credential-shaped string matching /${pattern}/"
               failed=1
             fi

@@ -96,6 +96,6 @@ class LocationCollector(Collector):
 
 def _as_float(value: Any) -> float | None:
     try:
-        return float(value)  # type: ignore[arg-type]
+        return float(value)
     except (TypeError, ValueError):
         return None

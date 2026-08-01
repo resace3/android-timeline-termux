@@ -12,17 +12,19 @@ import re
 import sqlite3
 from pathlib import Path
 
-from android_timeline.database import _MIGRATIONS
+from android_timeline.database import _MIGRATIONS, split_statements
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCHEMA_SQL = REPO_ROOT / ".github" / "scripts" / "outbox-schema.sql"
 
 
 def _statements(sql: str) -> list[str]:
-    """Normalise SQL into a comparable set of whitespace-collapsed statements."""
-    without_comments = re.sub(r"^\s*--.*$", "", sql, flags=re.MULTILINE)
-    parts = [p.strip() for p in without_comments.split(";")]
-    return sorted(re.sub(r"\s+", " ", p) for p in parts if p)
+    """Normalise SQL into a comparable set of whitespace-collapsed statements.
+
+    Uses the same splitter the migration runner uses, so the comparison
+    cannot pass because of a difference in how the two are parsed.
+    """
+    return sorted(re.sub(r"\s+", " ", statement) for statement in split_statements(sql))
 
 
 def test_schema_file_exists() -> None:

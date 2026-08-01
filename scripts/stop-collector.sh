@@ -7,6 +7,14 @@ set -euo pipefail
 DATA_DIR="${ANDROID_TIMELINE_HOME:-${HOME}/.local/share/android-timeline}"
 PID_FILE="${DATA_DIR}/collector.pid"
 
+# Releasing the wake lock must never fail the script: Termux:API may be
+# absent, and the collector is already stopped by the time we get here.
+release_wake_lock() {
+    if command -v termux-wake-unlock >/dev/null 2>&1; then
+        termux-wake-unlock || true
+    fi
+}
+
 if [ ! -f "$PID_FILE" ]; then
     echo "[stop] no PID file at ${PID_FILE}; nothing to do"
     exit 0
@@ -25,7 +33,7 @@ kill -TERM "$PID"
 for _ in $(seq 1 30); do
     if ! kill -0 "$PID" 2>/dev/null; then
         rm -f "$PID_FILE"
-        command -v termux-wake-unlock >/dev/null 2>&1 && termux-wake-unlock || true
+        release_wake_lock
         echo "[stop] stopped cleanly"
         exit 0
     fi

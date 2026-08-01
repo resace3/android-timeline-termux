@@ -56,13 +56,13 @@ class BatteryCollector(Collector):
 
 def _as_int(value: Any) -> int | None:
     try:
-        return int(value)  # type: ignore[arg-type]
+        return int(value)
     except (TypeError, ValueError):
         return None
 
 
 def _as_float(value: Any) -> float | None:
     try:
-        return float(value)  # type: ignore[arg-type]
+        return float(value)
     except (TypeError, ValueError):
         return None

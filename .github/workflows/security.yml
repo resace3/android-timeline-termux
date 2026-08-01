@@ -80,7 +80,9 @@ jobs:
           set -euo pipefail
           python -m pip install --upgrade pip pip-audit
           python -m pip install -e ".[dev]"
-          pip-audit --strict --progress-spinner off
+          # --skip-editable omits this project itself, which is installed
+          # from the working tree and has no PyPI record to audit against.
+          pip-audit --strict --skip-editable --progress-spinner off
 
   bandit:
     name: Static security analysis

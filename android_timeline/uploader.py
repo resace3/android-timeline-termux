@@ -293,13 +293,13 @@ class Uploader:
         Jitter matters on a phone: without it every queued device retries in
         lockstep after a network outage ends.
         """
-        base = self.config.upload.initial_backoff_seconds * (2 ** (attempt - 1))
-        capped = min(base, self.config.upload.max_backoff_seconds)
-        ratio = self.config.upload.jitter_ratio
+        base = float(self.config.upload.initial_backoff_seconds) * (2 ** (attempt - 1))
+        capped = min(base, float(self.config.upload.max_backoff_seconds))
+        ratio = float(self.config.upload.jitter_ratio)
         if ratio <= 0:
-            return capped
+            return float(capped)
         spread = capped * ratio
-        return max(0.0, capped + self._rng.uniform(-spread, spread))
+        return float(max(0.0, capped + self._rng.uniform(-spread, spread)))
 
 
 def _decode_json(raw: bytes) -> dict[str, Any]:

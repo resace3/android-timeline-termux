@@ -24,7 +24,25 @@ from typing import Any
 
 from .models import Event, iso_utc, utc_now
 
-__all__ = ["SCHEMA_VERSION", "Outbox", "OutboxStats"]
+__all__ = ["SCHEMA_VERSION", "Outbox", "OutboxStats", "split_statements"]
+
+
+def split_statements(script: str) -> list[str]:
+    """Split a migration script into individual SQL statements.
+
+    Safe for our schema, which contains no semicolons inside string
+    literals. Comment lines are stripped so the same helper can read the
+    standalone copy of the schema used by the Android emulator job.
+    """
+    without_comments = "\n".join(
+        line for line in script.splitlines() if not line.strip().startswith("--")
+    )
+    return [
+        statement.strip()
+        for statement in without_comments.split(";")
+        if statement.strip()
+    ]
+
 
 #: Version of the *local database* layout (distinct from the event schema).
 SCHEMA_VERSION = 1
@@ -185,8 +203,13 @@ class Outbox:
         for version, script in _MIGRATIONS:
             if version <= current:
                 continue
+            # Statements are executed one at a time rather than via
+            # executescript(): that helper implicitly commits, which would
+            # end the surrounding transaction and leave a half-applied
+            # migration recoverable only by hand.
             with self.transaction() as conn:
-                conn.executescript(script)
+                for statement in split_statements(script):
+                    conn.execute(statement)
                 conn.execute(
                     "INSERT INTO schema_migrations (version, applied_at_utc) "
                     "VALUES (?, ?)",
@@ -295,7 +318,7 @@ class Outbox:
         # travels as a bound parameter, so a source name containing SQL is
         # matched literally rather than executed.
         rows = self._conn.execute(
-            f"SELECT * FROM events {where} ORDER BY event_time_utc, event_id LIMIT ?",  # noqa: S608
+            f"SELECT * FROM events {where} ORDER BY event_time_utc, event_id LIMIT ?",  # noqa: S608  # nosec B608
             params,
         ).fetchall()
         return [_row_to_event_dict(row) for row in rows]
