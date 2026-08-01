@@ -16,12 +16,14 @@
 #     `tail -f /dev/null`, which bypasses termux-docker's /entrypoint.sh.
 #     We therefore drive `docker run` ourselves instead of using a job
 #     container.
-#  2. Package installation inside this image frequently fails on GitHub
-#     runners with "None of the mirrors are accessible" -- a DNS problem
-#     inside the container network that upstream closed as wontfix
-#     (termux/termux-docker#51). Every `pkg`/`apt` step below is therefore
-#     treated as best-effort, and the job still reports a useful result
-#     when package installation is impossible.
+#  2. Package installation inside this image has historically failed on
+#     GitHub runners with "None of the mirrors are accessible" -- a DNS
+#     problem inside the container network that upstream closed as wontfix
+#     (termux/termux-docker#51). It DOES currently succeed here, but it
+#     depends on upstream mirror availability that we do not control, so
+#     every `pkg` step is still treated as best-effort and the job reports
+#     a useful result either way. That dependency is also why this job is
+#     not a required check.
 #
 # See docs/testing-limitations.md for what this does and does not prove.
 
@@ -222,17 +224,26 @@ jobs:
             "${TERMUX_IMAGE}" \
             "${TERMUX_PREFIX}/bin/bash" -lc '
               set -eux
+              # Termux has no /tmp: TMPDIR is $PREFIX/tmp and $HOME is the
+              # only reliably writable place for a build tree.
+              work="$HOME/atl-src"
+              config="$HOME/config.toml"
+              rm -rf "$work"
+              cp -r /repo "$work"
+              cd "$work"
+
               pkg install -y python
-              cp -r /repo /tmp/src
-              cd /tmp/src
-              python3 -m pip install --break-system-packages .
-              android-timeline --config /tmp/config.toml init
-              sed -i "s|^base_url = .*|base_url = \"https://timeline.example.invalid:8099\"|" /tmp/config.toml
-              android-timeline --config /tmp/config.toml --json collect-once --heartbeat
-              android-timeline --config /tmp/config.toml --json status
+              python3 -m pip install --quiet .
+
+              android-timeline --config "$config" init
+              sed -i "s|^base_url = .*|base_url = \"https://timeline.example.invalid:8099\"|" "$config"
+              android-timeline --config "$config" --json collect-once --heartbeat
+              android-timeline --config "$config" --json status
+
               test -f "$ANDROID_TIMELINE_HOME/outbox.sqlite3"
-              echo "collector smoke test passed inside Termux"
-            '
+              echo "ATL_SMOKE=pass"
+            ' | tee "${RUNNER_TEMP}/termux-smoke.log"
+          grep -q "^ATL_SMOKE=pass$" "${RUNNER_TEMP}/termux-smoke.log"
           echo "result=pass" >> "$GITHUB_OUTPUT"
 
       # --- 4. honest reporting -----------------------------------------

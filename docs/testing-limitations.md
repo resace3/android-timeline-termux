@@ -51,20 +51,28 @@ Proven (when the image starts, which it reliably does):
   container. This is the check that stops us quietly passing an ordinary
   Linux image off as a Termux test.
 
-Attempted, usually fails:
+Attempted, and currently succeeding:
 
-- `pkg install python`. On GitHub-hosted runners this typically dies with
-  *"None of the mirrors are accessible"*. The cause is DNS resolution inside
-  the container network, reported upstream as
+- `pkg install python` **works** on GitHub-hosted runners as of the runs
+  linked from this repository's Actions tab: Termux installs Python 3.14
+  and the collector is then installed and exercised inside the real Termux
+  container (`collect-once`, `status`, and the SQLite outbox created under
+  the Termux home directory).
+
+  This is better than the documented upstream situation. The historical
+  failure is *"None of the mirrors are accessible"*, a DNS problem inside
+  the container network reported as
   [termux/termux-docker#51](https://github.com/termux/termux-docker/issues/51)
-  and **closed as wontfix**. The workflow captures the exact failure into the
-  job summary rather than hiding it, and the collector smoke test that
-  depends on Python is skipped when this happens.
+  and **closed as wontfix**. It did not reproduce here, but the outcome
+  depends on upstream mirror availability that this project does not
+  control, so the step remains best-effort: when it fails, the workflow
+  records the exact failure in the job summary and skips the Python-dependent
+  smoke test rather than hiding it.
 
-Why this job is not required: its outcome depends on upstream mirror and DNS
-behaviour we do not control. Making it a required check would mean blocking
-merges on someone else's infrastructure. It runs on every relevant PR, on
-`main`, and weekly on a schedule, so a regression is still visible.
+Why this job is still not required: its outcome depends on someone else's
+mirror infrastructure. Making it a required check would mean blocking merges
+on that. It runs on every relevant PR, on `main`, and weekly on a schedule,
+so a regression stays visible.
 
 **Explicitly not proven:** Termux:API commands, battery, location, sensors,
 Termux:Boot, Android permissions, Binder, or anything else that needs the
@@ -87,6 +95,10 @@ summary):
 6. An authenticated batch upload from the device is accepted.
 7. Replaying the identical batch is recognised as duplicates.
 8. An invalid bearer token is rejected with HTTP 401.
+
+Phases 5 to 8 speak HTTP over `toybox` netcat, because AOSP system images
+ship neither `curl` nor `wget`. The request still originates on the device;
+only the client library differs from the collector's.
 
 Skipped, and honestly labelled as such:
 
