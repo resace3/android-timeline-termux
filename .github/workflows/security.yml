@@ -1,0 +1,163 @@
+name: Security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "23 5 * * 2"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  codeql:
+    name: CodeQL
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [python, actions]
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4.37.4
+        with:
+          languages: ${{ matrix.language }}
+          queries: security-extended
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@v4.37.4
+        with:
+          category: /language:${{ matrix.language }}
+
+  dependency-review:
+    name: Dependency review
+    runs-on: ubuntu-24.04
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/dependency-review-action@v5.0.0
+        with:
+          fail-on-severity: moderate
+          comment-summary-in-pr: never
+
+  audit:
+    name: Python dependency audit
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v7.0.0
+        with:
+          python-version: "3.13"
+
+      # The runtime has no third-party dependencies, so this audits the dev
+      # toolchain -- the only supply chain this repository actually has.
+      - name: Audit the development toolchain
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip pip-audit
+          python -m pip install -e ".[dev]"
+          pip-audit --strict --progress-spinner off
+
+  bandit:
+    name: Static security analysis
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v7.0.0
+        with:
+          python-version: "3.13"
+
+      # Ruff's flake8-bandit rules (the `S` prefix) run in CI as part of
+      # linting; this job runs bandit itself as an independent second
+      # opinion so a ruff configuration mistake cannot hide a finding.
+      - name: Bandit
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip bandit
+          bandit -r android_timeline -ll -ii
+
+  shell-analysis:
+    name: Shell script security analysis
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: ShellCheck (all severities)
+        run: |
+          set -euo pipefail
+          shellcheck --shell=bash --severity=info scripts/*.sh .github/scripts/*.sh
+          shellcheck --shell=sh --severity=info termux-boot/start-android-timeline
+
+  no-secret-verification:
+    name: No committed secrets
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      # GitHub secret scanning with push protection is enabled on this
+      # repository. This job is an independent check over full history so a
+      # rewritten or force-pushed branch cannot slip past it.
+      - name: Scan full history for credential-shaped strings
+        run: |
+          set -euo pipefail
+          patterns=(
+            'gh[pousr]_[A-Za-z0-9]{36,}'
+            'github_pat_[A-Za-z0-9_]{60,}'
+            'eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.'
+            '-----BEGIN [A-Z ]*PRIVATE KEY-----'
+            'AKIA[0-9A-Z]{16}'
+            '\.ui\.nabu\.casa'
+          )
+          failed=0
+          for pattern in "${patterns[@]}"; do
+            if git rev-list --all | while read -r sha; do
+                 git grep -InE "${pattern}" "${sha}" -- . 2>/dev/null || true
+               done | grep .; then
+              echo "::error::a credential-shaped string matching /${pattern}/ is in history"
+              failed=1
+            fi
+          done
+          exit "$failed"
+
+      - name: Config example must not contain a usable endpoint or credential
+        run: |
+          set -euo pipefail
+          grep -q 'example.invalid' config.example.toml
+          # Placeholders only: no token or salt value may ever be assigned.
+          if grep -nE '^\s*(token|salt)\s*=' config.example.toml; then
+            echo '::error::config.example.toml assigns a token or salt value'
+            exit 1
+          fi
+          echo 'config example contains placeholders only'

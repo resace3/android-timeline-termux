@@ -1,0 +1,80 @@
+# android-timeline collector configuration.
+#
+# SECRETS DO NOT BELONG IN THIS FILE.
+#   * the device bearer token lives in server.token_file (chmod 600)
+#   * the pseudonymisation salt lives in privacy.salt_file (chmod 600)
+# Both may instead be supplied via $ANDROID_TIMELINE_TOKEN / $ANDROID_TIMELINE_SALT.
+
+[device]
+# Pseudonymous. Never a serial number, IMEI, phone number or your name.
+device_id = "device-example-001"
+
+[server]
+# Must be https:// outside of automated tests.
+base_url = "https://homeassistant.example.invalid:8099"
+token_file = "~/.config/android-timeline/token"
+timeout_seconds = 30.0
+verify_tls = true
+# Enabling this alone does nothing: plaintext HTTP additionally requires
+# $ANDROID_TIMELINE_INSECURE_TEST_MODE and a loopback host.
+allow_insecure_test_endpoint = false
+max_batch_events = 500
+max_batch_bytes = 1048576
+compression = true
+compression_min_bytes = 4096
+
+[upload]
+max_attempts = 6
+initial_backoff_seconds = 2.0
+max_backoff_seconds = 900.0
+jitter_ratio = 0.25
+dead_letter_after_attempts = 25
+interval_seconds = 300
+
+[privacy]
+salt_file = "~/.config/android-timeline/salt"
+store_message_bodies = false
+store_contact_names = false
+# disabled | coarse | geohash | precise | raw   (raw is full coordinates)
+location_mode = "disabled"
+geohash_precision = 6
+coarse_decimal_places = 2
+
+[retention]
+# Off by default: acknowledged raw events are kept forever.
+enabled = false
+delete_acknowledged_after_days = 0
+
+[runtime]
+heartbeat_interval_seconds = 900
+
+[collectors.battery]
+enabled = true
+interval_seconds = 300
+
+[collectors.wifi]
+enabled = true
+interval_seconds = 300
+
+[collectors.sensors]
+enabled = false
+interval_seconds = 900
+samples = 5
+max_sensors = 4
+
+[collectors.location]
+enabled = false
+interval_seconds = 900
+provider = "network"
+request = "last"
+
+# Sensitive sources. Metadata only, and off by default.
+[collectors.calls]
+enabled = false
+interval_seconds = 3600
+limit = 50
+
+[collectors.sms]
+enabled = false
+interval_seconds = 3600
+limit = 50

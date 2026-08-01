@@ -1,0 +1,251 @@
+# Layer 2 validation: the OFFICIAL termux/termux-docker image.
+#
+# STATUS: INFORMATIONAL / NON-BLOCKING.
+#
+# This job is deliberately allowed to fail. A Linux container running the
+# Termux rootfs is *not* Android: there is no Android framework, no
+# Termux:API, no Binder, no battery and no sensors. What it can prove is
+# narrow but real -- that our shell scripts, path assumptions and Termux
+# detection behave correctly against the genuine Termux filesystem layout
+# and the genuine unprivileged Termux user.
+#
+# Two upstream constraints shape this workflow, and neither is worked
+# around with unsafe hacks:
+#
+#  1. GitHub Actions rewrites the entrypoint of `jobs.<id>.container` to
+#     `tail -f /dev/null`, which bypasses termux-docker's /entrypoint.sh.
+#     We therefore drive `docker run` ourselves instead of using a job
+#     container.
+#  2. Package installation inside this image frequently fails on GitHub
+#     runners with "None of the mirrors are accessible" -- a DNS problem
+#     inside the container network that upstream closed as wontfix
+#     (termux/termux-docker#51). Every `pkg`/`apt` step below is therefore
+#     treated as best-effort, and the job still reports a useful result
+#     when package installation is impossible.
+#
+# See docs/testing-limitations.md for what this does and does not prove.
+
+name: Termux container compatibility (informational)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - "scripts/**"
+      - "termux-boot/**"
+      - "android_timeline/**"
+      - ".github/workflows/termux-container.yml"
+  schedule:
+    # Weekly, so upstream regressions surface without blocking day-to-day work.
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: termux-container-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The official image. x86_64 matches the GitHub runner architecture, so no
+  # qemu emulation (and no --privileged) is required.
+  TERMUX_IMAGE: termux/termux-docker:x86_64
+  TERMUX_PREFIX: /data/data/com.termux/files/usr
+  TERMUX_HOME: /data/data/com.termux/files/home
+
+jobs:
+  termux-container:
+    name: Official Termux image (allowed to fail)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    # Informational only: this must never block a merge.
+    continue-on-error: true
+    outputs:
+      entrypoint: ${{ steps.entrypoint.outputs.result }}
+      packages: ${{ steps.packages.outputs.result }}
+      python: ${{ steps.packages.outputs.python }}
+      collector: ${{ steps.collector.outputs.result }}
+
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Pull the official image
+        run: |
+          set -euo pipefail
+          docker pull "${TERMUX_IMAGE}"
+          docker image inspect "${TERMUX_IMAGE}" \
+            --format 'digest={{index .RepoDigests 0}}{{"\n"}}entrypoint={{.Config.Entrypoint}}{{"\n"}}cmd={{.Config.Cmd}}{{"\n"}}user={{.Config.User}}'
+
+      # --- 1. entrypoint and identity ---------------------------------
+      - name: Verify the documented entrypoint and unprivileged user
+        id: entrypoint
+        run: |
+          set -euo pipefail
+          # termux-docker drops privileges to uid/gid 1000. Running the
+          # package manager as root is explicitly unsupported upstream, so
+          # we assert we are NOT root rather than working around it.
+          out=$(docker run --rm --user 1000:1000 "${TERMUX_IMAGE}" \
+            /data/data/com.termux/files/usr/bin/sh -lc 'id -u; echo "$PREFIX"; echo "$HOME"')
+          echo "${out}"
+
+          uid=$(echo "${out}" | sed -n 1p)
+          prefix=$(echo "${out}" | sed -n 2p)
+          home=$(echo "${out}" | sed -n 3p)
+
+          [ "${uid}" = "1000" ] || { echo "::error::expected uid 1000, got ${uid}"; exit 1; }
+          [ "${prefix}" = "${TERMUX_PREFIX}" ] || { echo "::error::unexpected PREFIX ${prefix}"; exit 1; }
+          [ "${home}" = "${TERMUX_HOME}" ] || { echo "::error::unexpected HOME ${home}"; exit 1; }
+
+          echo "result=pass" >> "$GITHUB_OUTPUT"
+
+      - name: Verify the Termux filesystem layout
+        run: |
+          set -euo pipefail
+          docker run --rm --user 1000:1000 "${TERMUX_IMAGE}" \
+            "${TERMUX_PREFIX}/bin/sh" -lc '
+              set -eu
+              test -d "$PREFIX/bin"        || { echo "missing $PREFIX/bin"; exit 1; }
+              test -x "$PREFIX/bin/sh"     || { echo "missing $PREFIX/bin/sh"; exit 1; }
+              test -d /data/data/com.termux/files || { echo "missing termux files dir"; exit 1; }
+              echo "termux layout ok"
+            '
+
+      # Our installer must refuse to run outside Termux and accept it inside.
+      # This is the single highest-value thing this layer proves.
+      - name: install-termux.sh detects a genuine Termux environment
+        run: |
+          set -euo pipefail
+          docker run --rm --user 1000:1000 \
+            -v "${GITHUB_WORKSPACE}:/repo:ro" \
+            "${TERMUX_IMAGE}" \
+            "${TERMUX_PREFIX}/bin/bash" -lc '
+              set -eu
+              # --help exits 0 without touching the filesystem; the Termux
+              # guard in the script runs before any work.
+              bash /repo/scripts/install-termux.sh --help >/dev/null
+              echo "installer help ok inside termux"
+
+              # The guard itself: the prefix check must pass here.
+              if [ ! -d "/data/data/com.termux/files/usr" ]; then
+                echo "termux prefix check would have failed"; exit 1
+              fi
+              echo "termux guard ok"
+            '
+
+      - name: The same guard must REFUSE to run on a non-Termux image
+        run: |
+          set -euo pipefail
+          # A plain Debian container is not Termux, and the installer must
+          # say so. This is what stops us quietly passing off an ordinary
+          # Linux image as a Termux test.
+          set +e
+          docker run --rm -v "${GITHUB_WORKSPACE}:/repo:ro" debian:12-slim \
+            bash -c 'PREFIX= bash /repo/scripts/install-termux.sh 2>&1'
+          status=$?
+          set -e
+          if [ "${status}" -eq 0 ]; then
+            echo "::error::installer ran on a non-Termux image; the guard is broken"
+            exit 1
+          fi
+          echo "installer correctly refused to run outside Termux (exit ${status})"
+
+      # --- 2. package installation (best effort, see header) -----------
+      - name: Attempt package installation
+        id: packages
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          echo "Attempting 'pkg install python' inside the official image."
+          echo "Known upstream issue: termux/termux-docker#51 (DNS / mirrors)."
+
+          set +e
+          timeout 600 docker run --rm --user 1000:1000 "${TERMUX_IMAGE}" \
+            "${TERMUX_PREFIX}/bin/bash" -lc '
+              set -x
+              pkg update -y  && pkg install -y python && python3 --version
+            ' 2>&1 | tee /tmp/pkg.log
+          status=${PIPESTATUS[0]}
+          set -e
+
+          if [ "${status}" -eq 0 ]; then
+            echo "result=pass" >> "$GITHUB_OUTPUT"
+            echo "python=available" >> "$GITHUB_OUTPUT"
+            echo "::notice::Termux package installation succeeded in CI."
+          else
+            echo "result=fail" >> "$GITHUB_OUTPUT"
+            echo "python=unavailable" >> "$GITHUB_OUTPUT"
+            {
+              echo "### Termux package installation failed (expected)"
+              echo
+              echo "Exit status: \`${status}\`"
+              echo
+              echo "This reproduces the documented upstream limitation"
+              echo "[termux/termux-docker#51](https://github.com/termux/termux-docker/issues/51):"
+              echo "package mirrors are unreachable from a container on a"
+              echo "GitHub-hosted runner. It is **not** a defect in this"
+              echo "repository, and Layer 1 (Ubuntu) and Layer 3 (Android"
+              echo "emulator) remain the authoritative validation."
+              echo
+              echo '```'
+              tail -n 25 /tmp/pkg.log
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning::Termux package installation unavailable in CI (upstream issue #51)."
+          fi
+
+      # --- 3. collector smoke test, only if python was obtainable -------
+      - name: Collector smoke test inside Termux
+        id: collector
+        if: steps.packages.outputs.python == 'available'
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          docker run --rm --user 1000:1000 \
+            -v "${GITHUB_WORKSPACE}:/repo:ro" \
+            -e ANDROID_TIMELINE_TOKEN=synthetic-ci-token \
+            -e ANDROID_TIMELINE_SALT=synthetic-ci-salt \
+            -e ANDROID_TIMELINE_HOME=/data/data/com.termux/files/home/atl \
+            -e ANDROID_TIMELINE_TERMUX_MOCK_DIR=/repo/tests/fixtures/termux \
+            "${TERMUX_IMAGE}" \
+            "${TERMUX_PREFIX}/bin/bash" -lc '
+              set -eux
+              pkg install -y python
+              cp -r /repo /tmp/src
+              cd /tmp/src
+              python3 -m pip install --break-system-packages .
+              android-timeline --config /tmp/config.toml init
+              sed -i "s|^base_url = .*|base_url = \"https://timeline.example.invalid:8099\"|" /tmp/config.toml
+              android-timeline --config /tmp/config.toml --json collect-once --heartbeat
+              android-timeline --config /tmp/config.toml --json status
+              test -f "$ANDROID_TIMELINE_HOME/outbox.sqlite3"
+              echo "collector smoke test passed inside Termux"
+            '
+          echo "result=pass" >> "$GITHUB_OUTPUT"
+
+      # --- 4. honest reporting -----------------------------------------
+      - name: Report what this layer validated
+        if: always()
+        run: |
+          {
+            echo "## Layer 2: official Termux container"
+            echo
+            echo "Image: \`${TERMUX_IMAGE}\` (official \`termux/termux-docker\`)"
+            echo
+            echo "| Check | Result |"
+            echo "| --- | --- |"
+            echo "| Entrypoint, uid 1000, PREFIX/HOME | ${{ steps.entrypoint.outputs.result || 'fail' }} |"
+            echo "| Termux filesystem layout | see job log |"
+            echo "| Installer accepts genuine Termux | see job log |"
+            echo "| Installer refuses non-Termux images | see job log |"
+            echo "| Package installation (\`pkg install python\`) | ${{ steps.packages.outputs.result || 'fail' }} |"
+            echo "| Collector smoke test | ${{ steps.collector.outputs.result || 'skipped' }} |"
+            echo
+            echo "**This layer does NOT validate:** Termux:API commands, real"
+            echo "battery/location/sensor data, Termux:Boot, Android background"
+            echo "restrictions, or anything requiring the Android framework."
+            echo "A Linux container running the Termux rootfs is not Android."
+          } >> "$GITHUB_STEP_SUMMARY"

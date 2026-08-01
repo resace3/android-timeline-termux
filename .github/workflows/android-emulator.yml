@@ -1,0 +1,235 @@
+# Layer 3 validation: a real Android system image in an emulator.
+#
+# STATUS: NON-BLOCKING (see docs/testing-limitations.md).
+#
+# What this proves that Layers 1 and 2 cannot:
+#   * the collector runs on a real Android kernel + framework, on arm-free
+#     x86_64, under Android's own process and permission model
+#   * the SQLite outbox is created and written on an Android filesystem
+#   * an authenticated batch upload works over the emulator's host bridge
+#
+# What it CANNOT prove -- and this workflow never claims otherwise:
+#   * real GPS quality, real accelerometer behaviour, Health Connect
+#   * notification listener access, real SMS/call logs, cellular modem data
+#   * physical Bluetooth devices
+#   * manufacturer battery-killing, Doze behaviour over hours/days
+#   * long-term background reliability or Termux:Boot after a real reboot
+#
+# Installing Termux itself inside the emulator is attempted but is the
+# least reliable part: Termux is distributed through F-Droid/GitHub with
+# mutually incompatible signatures, and Android 13+ blocks installation of
+# apps targeting old API levels. The workflow therefore separates
+# "collector runs on Android" (reliable, via the Android shell) from
+# "collector runs inside the Termux app" (best effort).
+
+name: Android emulator (non-blocking)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - "android_timeline/**"
+      - "scripts/**"
+      - "tests/**"
+      - ".github/workflows/android-emulator.yml"
+  schedule:
+    - cron: "43 3 * * *"
+  workflow_dispatch:
+    inputs:
+      api-level:
+        description: Android API level to boot
+        required: false
+        default: "34"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-emulator-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  emulator:
+    name: Collector on Android ${{ matrix.api-level }} (x86_64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        api-level: ["34"]
+
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v7.0.0
+        with:
+          python-version: "3.13"
+
+      # KVM is available on GitHub-hosted Linux runners but the device node
+      # is not world-accessible by default.
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+
+      - uses: actions/setup-java@v5.0.0
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Cache AVD and system image
+        uses: actions/cache@v6.1.0
+        id: avd-cache
+        with:
+          path: |
+            ~/.android/avd/*
+            ~/.android/adb*
+          key: avd-${{ matrix.api-level }}-x86_64-v2
+
+      # Build the artefact on the host: the emulator image has no pip.
+      - name: Build the collector payload
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip build
+          python -m build --wheel
+          mkdir -p payload
+          cp -r android_timeline payload/
+          cp -r tests/fixtures/termux payload/mock-termux
+          python tests/fixtures/synthetic_day.py --events-only \
+            --output payload/synthetic_day.json
+          ls -R payload | head -50
+
+      # A synthetic ingestion server on the runner. The emulator reaches the
+      # host loopback interface through the special address 10.0.2.2, which
+      # avoids needing `adb reverse` (unreliable on some images) and never
+      # exposes anything outside the runner.
+      - name: Start the synthetic ingestion server
+        run: |
+          set -euo pipefail
+          python .github/scripts/synthetic_server.py --port 8099 \
+            --state /tmp/server-state.json &
+          echo $! > /tmp/server.pid
+          for _ in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8099/api/v1/health; then break; fi
+            sleep 1
+          done
+          echo
+          echo "synthetic ingestion server is up"
+
+      - name: Create AVD snapshot
+        if: steps.avd-cache.outputs.cache-hit != 'true'
+        uses: reactivecircus/android-emulator-runner@v2.38.0
+        with:
+          api-level: ${{ matrix.api-level }}
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          ram-size: 4096M
+          cores: 2
+          force-avd-creation: false
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: false
+          emulator-boot-timeout: 900
+          script: echo "AVD snapshot created"
+
+      - name: Run the collector on Android
+        id: android-run
+        uses: reactivecircus/android-emulator-runner@v2.38.0
+        with:
+          api-level: ${{ matrix.api-level }}
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          ram-size: 4096M
+          cores: 2
+          force-avd-creation: false
+          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: true
+          emulator-boot-timeout: 900
+          script: bash .github/scripts/emulator-smoke.sh
+
+      - name: Stop the synthetic server
+        if: always()
+        run: |
+          if [ -f /tmp/server.pid ]; then
+            kill "$(cat /tmp/server.pid)" 2>/dev/null || true
+          fi
+
+      - name: Verify the server received the emulator's batch
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ ! -f /tmp/server-state.json ]; then
+            echo "::warning::no server state file; the emulator never uploaded"
+            exit 0
+          fi
+          python - <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          state = json.loads(pathlib.Path("/tmp/server-state.json").read_text())
+          events = state.get("events", {})
+          batches = state.get("batches", [])
+          print(f"batches received: {len(batches)}")
+          print(f"unique events stored: {len(events)}")
+          if not events:
+              print("::warning::emulator produced no events")
+              sys.exit(0)
+          sources = sorted({e["source"] for e in events.values()})
+          print(f"sources: {sources}")
+          for event in events.values():
+              assert event["event_time_utc"].endswith("Z"), event["event_time_utc"]
+              assert isinstance(event["timezone_offset_minutes"], int)
+          print("all stored events carry UTC timestamps and a timezone offset")
+          PY
+
+      # Diagnostics only on failure, and only files we generated ourselves.
+      - name: Collect diagnostics
+        if: failure()
+        run: |
+          set -uo pipefail
+          mkdir -p diagnostics
+          cp /tmp/server-state.json diagnostics/ 2>/dev/null || true
+          cp /tmp/emulator-*.log diagnostics/ 2>/dev/null || true
+          # Redact anything that looks like a bearer token before upload.
+          find diagnostics -type f -exec \
+            sed -i -E 's/(Bearer|token"?[:=]"?)[[:space:]]*[A-Za-z0-9._-]+/\1 <redacted>/g' {} +
+          ls -l diagnostics
+
+      - uses: actions/upload-artifact@v7.0.1
+        if: failure()
+        with:
+          name: emulator-diagnostics-api${{ matrix.api-level }}
+          path: diagnostics/
+          retention-days: 3
+
+      - name: Report what this layer validated
+        if: always()
+        run: |
+          {
+            echo "## Layer 3: Android emulator (API ${{ matrix.api-level }}, x86_64)"
+            echo
+            echo "Result: \`${{ steps.android-run.outcome }}\`"
+            echo
+            echo "**Validated:** emulator boot, pushing the collector to an"
+            echo "Android device, running it under the Android runtime,"
+            echo "creating the SQLite outbox on an Android filesystem, and"
+            echo "an authenticated batch upload to a synthetic server over"
+            echo "the emulator host bridge (10.0.2.2)."
+            echo
+            echo "**NOT validated (requires a real phone):** GPS quality,"
+            echo "accelerometer behaviour, Health Connect, notification"
+            echo "listener access, real SMS/call logs, cellular data,"
+            echo "physical Bluetooth, manufacturer battery restrictions,"
+            echo "Termux:Boot after a real reboot, and multi-day background"
+            echo "reliability. See issue 'Real Android device acceptance"
+            echo "testing'."
+          } >> "$GITHUB_STEP_SUMMARY"

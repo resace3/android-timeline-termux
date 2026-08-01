@@ -1,0 +1,116 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "android-timeline-termux"
+version = "0.1.0"
+description = "Offline-first Android event collector for Termux with an idempotent upload protocol"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+authors = [{ name = "resace3" }]
+keywords = ["termux", "android", "digital-phenotyping", "sqlite", "home-assistant"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: End Users/Desktop",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: Android",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: System :: Monitoring",
+]
+
+# Deliberately empty. Termux users must never need a compiler to install
+# this, so the runtime is stdlib-only (sqlite3, urllib, tomllib, ssl, gzip).
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3",
+  "pytest-cov>=6.0",
+  "jsonschema>=4.23",
+  "mypy>=1.13",
+  "ruff>=0.8",
+]
+
+[project.scripts]
+android-timeline = "android_timeline.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/resace3/android-timeline-termux"
+Server = "https://github.com/resace3/android-timeline-home-assistant"
+Issues = "https://github.com/resace3/android-timeline-termux/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["android_timeline"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "/android_timeline",
+  "/schemas",
+  "/scripts",
+  "/termux-boot",
+  "/tests",
+  "/docs",
+  "/config.example.toml",
+  "/README.md",
+  "/LICENSE",
+]
+
+[tool.ruff]
+line-length = 90
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "C4", "SIM", "PTH", "RUF", "S"]
+ignore = [
+  # Assert is how pytest works.
+  "S101",
+  # `subprocess` use is intentional and argv is always a fixed list.
+  "S404",
+  # Long docstring lines in schemas/docs are fine.
+  "E501",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S105", "S106", "S311", "N802"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unreachable = true
+disallow_untyped_defs = true
+files = ["android_timeline"]
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+ignore_errors = true
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = "-ra --strict-markers --strict-config"
+markers = [
+  "integration: exercises a real local HTTP server",
+  "contract: asserts cross-repository protocol compatibility",
+]
+# Warnings are errors so a deprecation cannot rot silently. ResourceWarning
+# is exempt: the integration tests start real sockets and CPython reports
+# their teardown non-deterministically during GC.
+filterwarnings = ["error", "ignore::ResourceWarning"]
+
+[tool.coverage.run]
+source = ["android_timeline"]
+branch = true
+
+[tool.coverage.report]
+exclude_lines = [
+  "pragma: no cover",
+  "if TYPE_CHECKING:",
+  "raise NotImplementedError",
+  "if __name__ == .__main__.:",
+]
