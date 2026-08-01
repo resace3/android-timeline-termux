@@ -60,8 +60,11 @@ class TestDeduplication:
         assert outbox.count_events() == 1
 
     def test_add_events_returns_newly_stored_count(self, outbox: Outbox) -> None:
-        items = [event(1), event(2), event(1)]
-        assert outbox.add_events(items) == 2
+        # The repeated entry must be the *same* observation, not a second
+        # call to event(1): two calls a millisecond apart are two distinct
+        # events, which is correct behaviour but not what this asserts.
+        first, second = event(1), event(2)
+        assert outbox.add_events([first, second, first]) == 2
 
     def test_replay_after_upload_does_not_resurrect(self, outbox: Outbox) -> None:
         item = event(1)

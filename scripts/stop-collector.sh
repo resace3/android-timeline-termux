@@ -43,4 +43,4 @@ done
 echo "[stop] still running after 30s; sending SIGKILL" >&2
 kill -KILL "$PID" 2>/dev/null || true
 rm -f "$PID_FILE"
-command -v termux-wake-unlock >/dev/null 2>&1 && termux-wake-unlock || true
+release_wake_lock

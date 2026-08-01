@@ -139,7 +139,7 @@ class Uploader:
         try:
             # The scheme is constrained to http(s) by config validation, and
             # plaintext http is additionally gated behind test mode.
-            with urllib.request.urlopen(  # noqa: S310 - scheme validated in config  # noqa: S310 - scheme validated in config
+            with urllib.request.urlopen(  # noqa: S310  # nosec B310
                 request,
                 timeout=self.config.server.timeout_seconds,
                 context=self._ssl_context(),

@@ -79,10 +79,20 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip pip-audit
-          python -m pip install -e ".[dev]"
-          # --skip-editable omits this project itself, which is installed
-          # from the working tree and has no PyPI record to audit against.
-          pip-audit --strict --skip-editable --progress-spinner off
+          # Audit the declared dev extra directly rather than an installed
+          # environment: this project itself has no PyPI record, and
+          # pip-audit --strict treats that (and an editable install) as an
+          # error. The runtime has no dependencies, so the dev toolchain is
+          # the entire supply chain.
+          python - <<'PY' > /tmp/dev-requirements.txt
+          import pathlib
+          import tomllib
+
+          data = tomllib.loads(pathlib.Path("pyproject.toml").read_text())
+          print("\n".join(data["project"]["optional-dependencies"]["dev"]))
+          PY
+          cat /tmp/dev-requirements.txt
+          pip-audit --strict --progress-spinner off -r /tmp/dev-requirements.txt
 
   bandit:
     name: Static security analysis
