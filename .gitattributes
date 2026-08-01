@@ -1,0 +1,10 @@
+# Shell scripts and the Termux:Boot launcher must keep LF endings or the
+# Android shell will fail with `bad interpreter: no such file or directory`.
+*.sh text eol=lf
+*.py text eol=lf
+*.json text eol=lf
+*.toml text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.md text eol=lf
+termux-boot/* text eol=lf
