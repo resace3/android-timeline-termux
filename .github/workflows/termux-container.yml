@@ -88,13 +88,19 @@ jobs:
           # termux-docker drops privileges to uid/gid 1000. Running the
           # package manager as root is explicitly unsupported upstream, so
           # we assert we are NOT root rather than working around it.
+          #
+          # The first run of the image emits its bootstrap second-stage
+          # output on stdout before our command produces anything, so the
+          # values are tagged and grepped rather than read positionally.
           out=$(docker run --rm --user 1000:1000 "${TERMUX_IMAGE}" \
-            /data/data/com.termux/files/usr/bin/sh -lc 'id -u; echo "$PREFIX"; echo "$HOME"')
+            /data/data/com.termux/files/usr/bin/sh -lc \
+            'echo "ATL_UID=$(id -u)"; echo "ATL_PREFIX=${PREFIX}"; echo "ATL_HOME=${HOME}"')
           echo "${out}"
 
-          uid=$(echo "${out}" | sed -n 1p)
-          prefix=$(echo "${out}" | sed -n 2p)
-          home=$(echo "${out}" | sed -n 3p)
+          value_of() { echo "${out}" | grep -m1 "^$1=" | cut -d= -f2-; }
+          uid=$(value_of ATL_UID)
+          prefix=$(value_of ATL_PREFIX)
+          home=$(value_of ATL_HOME)
 
           [ "${uid}" = "1000" ] || { echo "::error::expected uid 1000, got ${uid}"; exit 1; }
           [ "${prefix}" = "${TERMUX_PREFIX}" ] || { echo "::error::unexpected PREFIX ${prefix}"; exit 1; }
@@ -105,21 +111,23 @@ jobs:
       - name: Verify the Termux filesystem layout
         run: |
           set -euo pipefail
-          docker run --rm --user 1000:1000 "${TERMUX_IMAGE}" \
+          out=$(docker run --rm --user 1000:1000 "${TERMUX_IMAGE}" \
             "${TERMUX_PREFIX}/bin/sh" -lc '
               set -eu
               test -d "$PREFIX/bin"        || { echo "missing $PREFIX/bin"; exit 1; }
               test -x "$PREFIX/bin/sh"     || { echo "missing $PREFIX/bin/sh"; exit 1; }
               test -d /data/data/com.termux/files || { echo "missing termux files dir"; exit 1; }
-              echo "termux layout ok"
-            '
+              echo "ATL_LAYOUT=ok"
+            ')
+          echo "${out}"
+          echo "${out}" | grep -q "^ATL_LAYOUT=ok$"
 
       # Our installer must refuse to run outside Termux and accept it inside.
       # This is the single highest-value thing this layer proves.
       - name: install-termux.sh detects a genuine Termux environment
         run: |
           set -euo pipefail
-          docker run --rm --user 1000:1000 \
+          out=$(docker run --rm --user 1000:1000 \
             -v "${GITHUB_WORKSPACE}:/repo:ro" \
             "${TERMUX_IMAGE}" \
             "${TERMUX_PREFIX}/bin/bash" -lc '
@@ -127,14 +135,15 @@ jobs:
               # --help exits 0 without touching the filesystem; the Termux
               # guard in the script runs before any work.
               bash /repo/scripts/install-termux.sh --help >/dev/null
-              echo "installer help ok inside termux"
 
               # The guard itself: the prefix check must pass here.
               if [ ! -d "/data/data/com.termux/files/usr" ]; then
-                echo "termux prefix check would have failed"; exit 1
+                echo "ATL_GUARD=would-have-failed"; exit 1
               fi
-              echo "termux guard ok"
-            '
+              echo "ATL_GUARD=ok"
+            ')
+          echo "${out}"
+          echo "${out}" | grep -q "^ATL_GUARD=ok$"
 
       - name: The same guard must REFUSE to run on a non-Termux image
         run: |
