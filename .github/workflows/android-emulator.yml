@@ -204,7 +204,7 @@ jobs:
             sed -i -E 's/(Bearer|token"?[:=]"?)[[:space:]]*[A-Za-z0-9._-]+/\1 <redacted>/g' {} +
           ls -l diagnostics
 
-      - uses: actions/upload-artifact@v7.0.1
+      - uses: actions/upload-artifact@v7.0.2
         if: failure()
         with:
           name: emulator-diagnostics-api${{ matrix.api-level }}
