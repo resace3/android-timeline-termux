@@ -79,7 +79,7 @@ jobs:
 
       - name: Upload coverage
         if: matrix.python-version == '3.13'
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: coverage-${{ matrix.python-version }}
           path: coverage.xml
@@ -186,7 +186,7 @@ jobs:
           python -m android_timeline.cli init --print-example > /tmp/example.toml
           diff -u config.example.toml /tmp/example.toml
 
-      - uses: actions/upload-artifact@v7.0.1
+      - uses: actions/upload-artifact@v7.0.2
         with:
           name: dist
           path: dist/
